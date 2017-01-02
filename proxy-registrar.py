@@ -3,16 +3,17 @@
 """Clase (y programa principal) para un servidor de eco en UDP simple."""
 
 import socketserver
+import socket
 import sys
 import json
 import os
 import hashlib as HL 
 from xml.sax import make_parser
 from xml.sax.handler import ContentHandler
-from time import time, gmtime, strftime
+from time import time, gmtime, strftime, sleep
 
 RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
-            200: 'SIP/2.0 200 OK\r\n\r\n', 
+            200: 'SIP/2.0 200 OK', 
             400: 'SIP/2.0 400 Bad Request\r\n\r\n',
             401: ('SIP/2.0 401 Unauthorized\r\nWWW Authenticate: '
                  + 'Digest nonce="{}"\r\n\r\n'),
@@ -60,8 +61,7 @@ class SIPHandler(socketserver.DatagramRequestHandler):
 
     def search_pass(self, name):
         with open(PASSWD_PATH) as f_pass:
-            text = f_pass.readlines()
-            for line in text:
+            for line in f_pass:
                 if line.split(':')[0] == name:
                     exit = line.split(':')[1][0:-1]
                     break
@@ -76,60 +76,79 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         u_ip, u_exp = self.client_address[0], c_data[3]
         u_pass = self.search_pass(u_name)
         # Controlando el tiempo
-        now = int(time())
-        str_now = strftime('%Y-%m-%d %H:%M:%S', gmtime(now))
-        time_exp = int(u_exp) + now
+        str_now = strftime('%Y-%m-%d %H:%M:%S', gmtime(int(time())))
+        time_exp = int(u_exp) + int(time())
         str_exp = strftime('%Y-%m-%d %H:%M:%S', gmtime(time_exp))
         nonce = "123456789"
-        if u_name not in self.user_data :
-            self.user_data[u_name] = {'address': u_ip, 'expires': str_exp,
+        if u_name not in self.user_data:
+            self.user_data[u_name] = {'addr': u_ip, 'expires': str_exp,
                                       'port': u_port, 'auth': False}
             to_send = RESP_COD[401].format(nonce)
         elif not self.user_data[u_name]['auth']:
-            resp = data.split('"')[-2]
+            try:
+                resp = data.split('"')[-2]
+            except IndexError:
+                resp = ""
             expect = HL.md5((nonce + u_pass).encode()).hexdigest()
-            print(expect)
             if resp == expect:
                 self.user_data[u_name]['auth'] = True
-                to_send = RESP_COD[200]
+                to_send = (RESP_COD[200] + "\r\n\r\n")
             else:
                 to_send = RESP_COD[401].format(nonce)
-        elif u_exp == "0":
-            del self.user_data[u_name]
-            to_send = RESP_COD[200]
         else:
-            to_send = RESP_COD[200]
-        self.delete_users(str_now)
+            to_send = (RESP_COD[200] + "\r\n\r\n")
         self.register2json()
         self.wfile.write(bytes(to_send, 'utf-8'))
 
+    def invite(self, data):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            dest = data.split()[1][4:]
+            (ip_port) = (self.user_data[dest]['addr'], 
+                         int(self.user_data[dest]['port']))
+            sock.connect(ip_port)
+            sock.send(bytes(data, 'utf-8'))
+            recv = sock.recv(1024).decode('utf-8')
+        if recv.split('\r\n')[0] == RESP_COD[100][0:-2]:
+            self.socket.sendto(bytes(recv, 'utf-8'), self.client_address)
+    def ack(self, data):
+         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            dest = data.split()[1][4:]
+            (ip_port) = (self.user_data[dest]['addr'], 
+                         int(self.user_data[dest]['port']))
+            sock.connect(ip_port)
+            sock.send(bytes(data, 'utf-8'))
+    def bye(self, data):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            dest = data.split()[1][4:]
+            (ip_port) = (self.user_data[dest]['addr'], 
+                         int(self.user_data[dest]['port']))
+            sock.connect(ip_port)
+            sock.send(bytes(data, 'utf-8'))
+            recv = sock.recv(1024).decode('utf-8')
+        if recv == (RESP_COD[200] + "\r\n\r\n"):
+            self.socket.sendto(bytes(recv, 'utf-8'), self.client_address)
+
     def handle(self):
         """Cada vez que un cliente envia una peticion se ejecuta."""
-        self.json2registered()
-        data = self.rfile.read().decode('utf-8')
-        print(data)
+        data = self.request[0].decode('utf-8')
         allowed = ["INVITE", "ACK", "BYE"]
+        print(data)
         met = data.split()[0]
-        to_send = ""
+        self.json2registered()
+        str_now = strftime('%Y-%m-%d %H:%M:%S', gmtime(int(time())))
+        self.delete_users(str_now)
         if met == "REGISTER":
             self.register(data)
         elif met == "INVITE":
-            to_send = ("SIP/2.0 100 Trying\r\n\r\nSIP/2.0 180 Ring\r\n\r\n" +
-                       "SIP/2.0 200 OK\r\n\r\n")
-        elif met == "BYE":
-            to_send = "SIP/2.0 200 OK\r\n\r\n"
+            self.invite(data)
         elif met == "ACK":
-            os.system("./mp32rtp -i " + "127.0.0.1" + " -p 23032 <")
+            self.ack(data)
+        elif met == "BYE":
+            self.bye(data)
         elif met not in allowed:
             to_send = "SIP/2.0 405 Method Not Allowed\r\n\r\n"
-        elif not authorized:
-            to_send = "SIP/2.0 401 Unauthorized\r\n\r\n"
-        elif USER not in usr_list:
-            to_send = "SIP/2.0 404 User Not Found\r\n\r\n"
         else:
             to_send = "SIP/2.0 400 Bad Request\r\n\r\n"
-        if to_send != "":
-            self.wfile.write(bytes(to_send, 'utf-8'))
 
 if __name__ == "__main__":
     # Creamos servidor y escuchamos
@@ -141,9 +160,7 @@ if __name__ == "__main__":
                   int(cHandler.config['server']['puerto']))
         LOG_PATH = cHandler.config['log']['path']
         DBASE = cHandler.config['database']['path']
-        print(DBASE)
         PASSWD_PATH = cHandler.config['database']['passwdpath']
-
     except (IndexError, ValueError):
         sys.exit("Usage: python3 server.py config")
     SERV = socketserver.UDPServer(SERVER, SIPHandler)
