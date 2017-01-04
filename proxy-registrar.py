@@ -6,17 +6,18 @@ import socketserver
 import socket
 import sys
 import json
-import os
 import hashlib as HL 
 from xml.sax import make_parser
 from xml.sax.handler import ContentHandler
-from time import time, gmtime, strftime, sleep
+from time import time, gmtime, strftime
+from uaclient import log
 
 RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
             200: 'SIP/2.0 200 OK', 
             400: 'SIP/2.0 400 Bad Request\r\n\r\n',
             401: ('SIP/2.0 401 Unauthorized\r\nWWW Authenticate: '
                  + 'Digest nonce="{}"\r\n\r\n'),
+            404: 'SIP/2.0 404 User Not Found\r\n\r\n',
             405: 'SIP/2.0 405 Method Not Allowed'}
 class UAHandler(ContentHandler):
 
@@ -92,6 +93,7 @@ class SIPHandler(socketserver.DatagramRequestHandler):
             expect = HL.md5((nonce + u_pass).encode()).hexdigest()
             if resp == expect:
                 self.user_data[u_name]['auth'] = True
+                self.user_data[u_name]['expires'] = str_exp
                 to_send = (RESP_COD[200] + "\r\n\r\n")
             else:
                 to_send = RESP_COD[401].format(nonce)
@@ -99,15 +101,20 @@ class SIPHandler(socketserver.DatagramRequestHandler):
             to_send = (RESP_COD[200] + "\r\n\r\n")
         self.register2json()
         self.wfile.write(bytes(to_send, 'utf-8'))
+        obj_log.log_write("send", (u_ip, u_port), to_send)
 
     def invite(self, data):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             dest = data.split()[1][4:]
-            (ip_port) = (self.user_data[dest]['addr'], 
-                         int(self.user_data[dest]['port']))
-            sock.connect(ip_port)
-            sock.send(bytes(data, 'utf-8'))
-            recv = sock.recv(1024).decode('utf-8')
+            try:
+                (ip_port) = (self.user_data[dest]['addr'], 
+                             int(self.user_data[dest]['port']))
+                sock.connect(ip_port)
+                sock.send(bytes(data, 'utf-8'))
+                recv = sock.recv(1024).decode('utf-8')
+            except (ConnectionRefusedError, KeyError):
+                recv = ""
+                self.wfile.write(bytes(RESP_COD[404], 'utf-8'))
         if recv.split('\r\n')[0] == RESP_COD[100][0:-2]:
             self.socket.sendto(bytes(recv, 'utf-8'), self.client_address)
     def ack(self, data):
@@ -131,7 +138,10 @@ class SIPHandler(socketserver.DatagramRequestHandler):
     def handle(self):
         """Cada vez que un cliente envia una peticion se ejecuta."""
         data = self.request[0].decode('utf-8')
-        allowed = ["INVITE", "ACK", "BYE"]
+        c_addr = (self.client_address[0], str(self.client_address[1]))
+        obj_log.log_write("recv", c_addr, data)
+        allow = ["INVITE", "ACK", "BYE"]
+        unallow = ["OPTION"]
         print(data)
         met = data.split()[0]
         self.json2registered()
@@ -145,10 +155,14 @@ class SIPHandler(socketserver.DatagramRequestHandler):
             self.ack(data)
         elif met == "BYE":
             self.bye(data)
-        elif met not in allowed:
+        elif met in unallow:
             to_send = "SIP/2.0 405 Method Not Allowed\r\n\r\n"
+            obj_log.log_write("send", c_addr, to_send)
+            self.wfile.write(bytes(to_send, 'utf-8'))
         else:
             to_send = "SIP/2.0 400 Bad Request\r\n\r\n"
+            obj_log.log_write("send", c_addr, to_send)
+            self.wfile.write(bytes(to_send, 'utf-8'))
 
 if __name__ == "__main__":
     # Creamos servidor y escuchamos
@@ -159,12 +173,15 @@ if __name__ == "__main__":
         SERVER = (cHandler.config['server']['ip'], 
                   int(cHandler.config['server']['puerto']))
         LOG_PATH = cHandler.config['log']['path']
+        obj_log = log(LOG_PATH)
         DBASE = cHandler.config['database']['path']
         PASSWD_PATH = cHandler.config['database']['passwdpath']
     except (IndexError, ValueError):
         sys.exit("Usage: python3 server.py config")
     SERV = socketserver.UDPServer(SERVER, SIPHandler)
-    print("Server " + NAME + " listening at port " + str(SERVER[1]))
+    text = "Server {} listening at port {}... ".format(SERVER[0], SERVER[1])
+    print(text)
+    obj_log.log_write("", "", text)
     try:
         SERV.serve_forever()
     except KeyboardInterrupt:
