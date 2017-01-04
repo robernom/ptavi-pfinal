@@ -1,0 +1,8 @@
+<config>
+	<account username="ua2@ptavi.com" passwd="PR4C71C4"/>
+	<uaserver ip="127.0.0.1" puerto="8889" />
+	<rtpaudio puerto="9998"/>
+	<regproxy ip="127.0.0.1" puerto="5555"/>
+	<log path="ua2_log.txt"/>
+	<audio path="cancion.mp3"/>
+</config>
