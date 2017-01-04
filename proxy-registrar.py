@@ -15,7 +15,7 @@ from uaclient import log
 RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
             200: 'SIP/2.0 200 OK', 
             400: 'SIP/2.0 400 Bad Request\r\n\r\n',
-            401: ('SIP/2.0 401 Unauthorized\r\nWWW Authenticate: '
+            401: ('SIP/2.0 401 Unauthorized\r\nWWW-Authenticate: '
                  + 'Digest nonce="{}"\r\n\r\n'),
             404: 'SIP/2.0 404 User Not Found\r\n\r\n',
             405: 'SIP/2.0 405 Method Not Allowed'}
@@ -38,7 +38,12 @@ class UAHandler(ContentHandler):
 class SIPHandler(socketserver.DatagramRequestHandler):
     """SIP server class."""
     user_data = {}
+    
+    def add_header(self, data):
+        div = data.split("\r\n", 1)
+        return("{}\r\n{}\r\n{}".format(div[0], PR_HEADER, div[1]))
 
+    
     def json2registered(self):
         """Busca fichero JSON con clientes; si no hay devuelve dicc vacio."""
         try:
@@ -110,38 +115,44 @@ class SIPHandler(socketserver.DatagramRequestHandler):
                 (ip_port) = (self.user_data[dest]['addr'], 
                              int(self.user_data[dest]['port']))
                 sock.connect(ip_port)
-                sock.send(bytes(data, 'utf-8'))
+                text = self.add_header(data)
+                sock.send(bytes(text, 'utf-8'))
                 recv = sock.recv(1024).decode('utf-8')
             except (ConnectionRefusedError, KeyError):
                 recv = ""
                 self.wfile.write(bytes(RESP_COD[404], 'utf-8'))
         if recv.split('\r\n')[0] == RESP_COD[100][0:-2]:
-            self.socket.sendto(bytes(recv, 'utf-8'), self.client_address)
+            text = self.add_header(recv)
+            self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
     def ack(self, data):
          with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             dest = data.split()[1][4:]
             (ip_port) = (self.user_data[dest]['addr'], 
                          int(self.user_data[dest]['port']))
             sock.connect(ip_port)
-            sock.send(bytes(data, 'utf-8'))
+            text = self.add_header(data)
+            sock.send(bytes(text, 'utf-8'))
     def bye(self, data):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             dest = data.split()[1][4:]
             (ip_port) = (self.user_data[dest]['addr'], 
                          int(self.user_data[dest]['port']))
             sock.connect(ip_port)
-            sock.send(bytes(data, 'utf-8'))
+            text = self.add_header(data)
+            sock.send(bytes(text, 'utf-8'))
             recv = sock.recv(1024).decode('utf-8')
         if recv == (RESP_COD[200] + "\r\n\r\n"):
-            self.socket.sendto(bytes(recv, 'utf-8'), self.client_address)
+            text = self.add_header(recv)
+            self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
 
     def handle(self):
         """Cada vez que un cliente envia una peticion se ejecuta."""
         data = self.request[0].decode('utf-8')
         c_addr = (self.client_address[0], str(self.client_address[1]))
         obj_log.log_write("recv", c_addr, data)
-        allow = ["INVITE", "ACK", "BYE"]
-        unallow = ["OPTION"]
+        allow = ["REGISTER","INVITE", "ACK", "BYE"]
+        unallow = ["CANCEL", "OPTIONS", "SUSCRIBE", "NOTIFY", "INFO", "PUBLISH",
+                   "PRACK", "REFER", "MESSAGE", "UPDATE"]
         print(data)
         met = data.split()[0]
         self.json2registered()
@@ -176,6 +187,7 @@ if __name__ == "__main__":
         obj_log = log(LOG_PATH)
         DBASE = cHandler.config['database']['path']
         PASSWD_PATH = cHandler.config['database']['passwdpath']
+        PR_HEADER = "Via: SIP/2.0/UDP {}:{}".format(SERVER[0], SERVER[1])
     except (IndexError, ValueError):
         sys.exit("Usage: python3 server.py config")
     SERV = socketserver.UDPServer(SERVER, SIPHandler)
