@@ -12,12 +12,16 @@ RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
 
 class SIPHandler(socketserver.DatagramRequestHandler):
     """SIP server class."""
+    listening = ""
     def handle(self):
         data = self.request[0].decode('utf-8')
         print(data)
         obj_log.log_write("recv", REGPROX, data)
         met = data.split()[0]
         if met == "INVITE":
+            portp = data.split('m=audio ')[1].split()[0]
+            iprtp = data.split('o=')[1].split()[1]
+            SIPHandler.listening = (iprtp, portp)
             to_send = (RESP_COD[100] + RESP_COD[180] + RESP_COD[200] + "\r\n"
                     + "Content-Type: application/sdp\r\n\r\nv=0\r\no={} {}\r\n"
                     + "s=Conver\r\nt=0\r\nm=audio {} RTP\r\n\r\n")
@@ -26,7 +30,8 @@ class SIPHandler(socketserver.DatagramRequestHandler):
             obj_log.log_write("send", REGPROX, to_send)
         elif met == "ACK":
             cmd = "./mp32rtp -i {} -p {} < {}"
-            obj_log.log_write("", "", "")
+            vlc = "cvlc rtp://@{}:{} 2> /dev/null &"
+            system(vlc.format(self.listening[0], self.listening[1]))
             system(cmd.format(SERVER[0], PORTP, AUD_PATH))
         elif met == "BYE":
             to_send = (RESP_COD[200] + "\r\n\r\n")
