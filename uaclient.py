@@ -85,12 +85,16 @@ class UAHandler(ContentHandler):
                 obj_log.log_write("", "", error.format(REGPROX[0], REGPROX[1]))
                 sys.exit(error.format(REGPROX[0], REGPROX[1]))
             recv = data.split("Content")[0]
-            if recv == (RESP_COD[100] + RESP_COD[180] + RESP_COD[200] + '\r\n'):
+            if recv == (RESP_COD[100] + PR_HEADER + RESP_COD[180] 
+                        + RESP_COD[200] + '\r\n'):
                 dest = data.split('o=')[1].split()[0]
+                portp = data.split('m=audio ')[1].split()[0]
                 text = ("ACK sip:{} SIP/2.0\r\n\r\n").format(dest)
                 my_socket.send(bytes(text,'utf-8'))
                 obj_log.log_write("send", REGPROX, text)
                 cmd = "./mp32rtp -i {} -p {} < {}"
+                vlc = "cvlc rtp://@{}:{} 2> /dev/null &"
+                system(vlc.format(SERVER[0], portp))
                 system(cmd.format(SERVER[0], PORTP, AUD_PATH))
         elif met == "BYE":
             text = ("{} sip:{} SIP/2.0\r\n\r\n").format(met, info)
@@ -125,8 +129,9 @@ if __name__ == "__main__":
     REGPROX = (cHandler.config['regproxy']['ip'],
                cHandler.config['regproxy']['puerto'])
     LOG_PATH = cHandler.config['log']['path']
-    obj_log = log(LOG_PATH)
     AUD_PATH = cHandler.config['audio']['path']
+    obj_log = log(LOG_PATH)
+    PR_HEADER = "Via: SIP/2.0/UDP {}:{}\r\n".format(REGPROX[0], REGPROX[1])
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as my_socket:
         my_socket.connect((REGPROX[0],int(REGPROX[1])))
         obj_log.log_write("", "", "Starting...")
