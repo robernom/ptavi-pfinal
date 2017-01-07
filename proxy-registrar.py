@@ -1,49 +1,56 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-"""Clase (y programa principal) para un servidor de eco en UDP simple."""
-
+"""Programa que actua como proxy-registrar en UDP."""
 import socketserver
 import socket
 import sys
 import json
-import hashlib as HL 
+import hashlib as HL
 from xml.sax import make_parser
 from xml.sax.handler import ContentHandler
 from time import time, gmtime, strftime
-from uaclient import log
+from uaclient import Log
 
 RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
-            200: 'SIP/2.0 200 OK', 
+            200: 'SIP/2.0 200 OK',
             400: 'SIP/2.0 400 Bad Request\r\n\r\n',
-            401: ('SIP/2.0 401 Unauthorized\r\nWWW-Authenticate: '
-                 + 'Digest nonce="{}"\r\n\r\n'),
+            401: ('SIP/2.0 401 Unauthorized\r\nWWW-Authenticate: ' +
+                  'Digest nonce="{}"\r\n\r\n'),
             404: 'SIP/2.0 404 User Not Found\r\n\r\n',
             405: 'SIP/2.0 405 Method Not Allowed'}
-class UAHandler(ContentHandler):
 
-    def __init__(self,xml):  
-        self.dtd = {'server': ('name','ip','puerto'), 
+
+def add_header(data):
+    """Introduce cabecera proxy en los mensajes que se van a reenviar."""
+    div = data.split("\r\n", 1)
+    return "{}\r\n{}\r\n{}".format(div[0], PR_HEADER, div[1])
+
+
+class PRHandler(ContentHandler):
+    """Clase para obtener los valores del xml."""
+
+    def __init__(self, xml):
+        """Crea los diccionarios para introducir los valores."""
+        self.dtd = {'server': ('name', 'ip', 'puerto'),
                     'log': ('path',),
-                    'database': ('path','passwdpath')}
+                    'database': ('path', 'passwdpath')}
         self.config = {tag: {} for tag in self.dtd}
         parser = make_parser()
         parser.setContentHandler(self)
         parser.parse(xml)
 
     def startElement(self, name, attrs):
+        """Introduce los valores en el diccionario."""
         if name in self.dtd:
             for elem in self.dtd[name]:
                 self.config[name][elem] = attrs.get(elem, "")
 
-class SIPHandler(socketserver.DatagramRequestHandler):
-    """SIP server class."""
-    user_data = {}
-    
-    def add_header(self, data):
-        div = data.split("\r\n", 1)
-        return("{}\r\n{}\r\n{}".format(div[0], PR_HEADER, div[1]))
 
-    
+class SIPHandler(socketserver.DatagramRequestHandler):
+    """Clase para un servidor SIP."""
+
+    user_data = {}
+
     def json2registered(self):
         """Busca fichero JSON con clientes; si no hay devuelve dicc vacio."""
         try:
@@ -52,10 +59,11 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         except FileNotFoundError:
             self.user_data = {}
 
-    def delete_users(self, time):
+    def delete_users(self, moment):
+        """Borra los usuarios expirados."""
         lista_expirados = []
         for user in self.user_data:
-            if self.user_data[user]['expires'] <= time:
+            if self.user_data[user]['expires'] <= moment:
                 lista_expirados.append(user)
         for name in lista_expirados:
             del self.user_data[name]
@@ -66,16 +74,21 @@ class SIPHandler(socketserver.DatagramRequestHandler):
             json.dump(self.user_data, f_json, sort_keys=True, indent=4)
 
     def search_pass(self, name):
+        """Busca password del usuario pasado como parametro."""
         with open(PASSWD_PATH) as f_pass:
-            for line in f_pass:
-                if line.split(':')[0] == name:
-                    exit = line.split(':')[1][0:-1]
-                    break
-                else:
-                    exit = ""
-            return exit
+            try:
+                for line in f_pass:
+                    if line.split(':')[0] == name:
+                        passwd = line.split(':')[1][0:-1]
+                        break
+                    else:
+                        passwd = ""
+                return passwd
+            except FileNotFoundError:
+                sys.exit("Password file not found")
 
     def register(self, data):
+        """Metodo REGISTER."""
         c_data = data.split()[1:]
         # Extracción de información del usuario
         u_name, u_port = c_data[0].split(':')[1:]
@@ -109,40 +122,61 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         obj_log.log_write("send", (u_ip, u_port), to_send)
 
     def invite(self, data):
+        """Metodo INVITE."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             dest = data.split()[1][4:]
             try:
-                (ip_port) = (self.user_data[dest]['addr'], 
+                (ip_port) = (self.user_data[dest]['addr'],
                              int(self.user_data[dest]['port']))
                 sock.connect(ip_port)
-                text = self.add_header(data)
+                text = add_header(data)
                 sock.send(bytes(text, 'utf-8'))
                 recv = sock.recv(1024).decode('utf-8')
             except (ConnectionRefusedError, KeyError):
                 recv = ""
                 self.wfile.write(bytes(RESP_COD[404], 'utf-8'))
-        if recv.split('\r\n')[0] == RESP_COD[100][0:-2]:
-            text = self.add_header(recv)
+        if recv.split('\r\n')[0:3] == [RESP_COD[100][0:-2],
+                                       RESP_COD[180][0:-2], RESP_COD[200]]:
+            text = add_header(recv)
             self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
+        try:
+            if recv.split()[1] and recv.split()[1] == "480":
+                text = add_header(recv)
+                self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
+        except IndexError:
+            pass
+
     def ack(self, data):
-         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            dest = data.split()[1][4:]
-            (ip_port) = (self.user_data[dest]['addr'], 
-                         int(self.user_data[dest]['port']))
-            sock.connect(ip_port)
-            text = self.add_header(data)
-            sock.send(bytes(text, 'utf-8'))
-    def bye(self, data):
+        """Metodo ACK."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             dest = data.split()[1][4:]
-            (ip_port) = (self.user_data[dest]['addr'], 
+            (ip_port) = (self.user_data[dest]['addr'],
                          int(self.user_data[dest]['port']))
             sock.connect(ip_port)
-            text = self.add_header(data)
+            text = add_header(data)
             sock.send(bytes(text, 'utf-8'))
-            recv = sock.recv(1024).decode('utf-8')
+            try:
+                recv = sock.recv(1024).decode('utf-8')
+                print(recv)
+            except socket.timeout:
+                pass
+
+    def bye(self, data):
+        """Metodo BYE."""
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            try:
+                dest = data.split()[1][4:]
+                (ip_port) = (self.user_data[dest]['addr'],
+                             int(self.user_data[dest]['port']))
+                sock.connect(ip_port)
+                text = add_header(data)
+                sock.send(bytes(text, 'utf-8'))
+                recv = sock.recv(1024).decode('utf-8')
+            except (ConnectionRefusedError, KeyError):
+                recv = ""
+                self.wfile.write(bytes(RESP_COD[404], 'utf-8'))
         if recv == (RESP_COD[200] + "\r\n\r\n"):
-            text = self.add_header(recv)
+            text = add_header(recv)
             self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
 
     def handle(self):
@@ -150,9 +184,8 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         data = self.request[0].decode('utf-8')
         c_addr = (self.client_address[0], str(self.client_address[1]))
         obj_log.log_write("recv", c_addr, data)
-        allow = ["REGISTER","INVITE", "ACK", "BYE"]
-        unallow = ["CANCEL", "OPTIONS", "SUSCRIBE", "NOTIFY", "INFO", "PUBLISH",
-                   "PRACK", "REFER", "MESSAGE", "UPDATE"]
+        unallow = ["CANCEL", "OPTIONS", "SUSCRIBE", "NOTIFY", "PUBLISH",
+                   "INFO", "PRACK", "REFER", "MESSAGE", "UPDATE"]
         print(data)
         met = data.split()[0]
         self.json2registered()
@@ -179,21 +212,21 @@ if __name__ == "__main__":
     # Creamos servidor y escuchamos
     try:
         CONFIG = sys.argv[1]
-        cHandler = UAHandler(CONFIG)
+        cHandler = PRHandler(CONFIG)
         NAME = cHandler.config['server']['name']
-        SERVER = (cHandler.config['server']['ip'], 
+        SERVER = (cHandler.config['server']['ip'],
                   int(cHandler.config['server']['puerto']))
         LOG_PATH = cHandler.config['log']['path']
-        obj_log = log(LOG_PATH)
+        obj_log = Log(LOG_PATH)
         DBASE = cHandler.config['database']['path']
         PASSWD_PATH = cHandler.config['database']['passwdpath']
         PR_HEADER = "Via: SIP/2.0/UDP {}:{}".format(SERVER[0], SERVER[1])
     except (IndexError, ValueError):
         sys.exit("Usage: python3 server.py config")
     SERV = socketserver.UDPServer(SERVER, SIPHandler)
-    text = "Server {} listening at port {}... ".format(SERVER[0], SERVER[1])
-    print(text)
-    obj_log.log_write("", "", text)
+    OK = "Server {} listening at port {}... ".format(SERVER[0], SERVER[1])
+    print(OK)
+    obj_log.log_write("", "", OK)
     try:
         SERV.serve_forever()
     except KeyboardInterrupt:
