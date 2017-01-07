@@ -1,0 +1,12 @@
+Cabecera proxy: 
+La cabecera proxy se coloca después de la primera línea de cada mensaje reenviado con el formato -> Via: SIP/2.0/UDP ip:puerto
+En el caso del mensaje de respuesta con 100, 180 y 200 también, es decir, se envía 100, cabecera proxy, 180, 200.
+
+Restablecer los usuarios conectados:
+Se reutiliza el código json2registered de la practica 4.
+
+Hilos (envío RTP e integración VLC):
+Utilizando Threading para abrir diferentes hilos y para acabar con ellos se utiliza pkill.
+
+
+En la captura me aparecen los mensajes con 100, 180 y 200 aparecen con el siguiente Warning: Header has no colon after the name
