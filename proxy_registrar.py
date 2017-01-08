@@ -9,6 +9,7 @@ import hashlib as HL
 from xml.sax import make_parser
 from xml.sax.handler import ContentHandler
 from time import time, gmtime, strftime
+from random import choice, randrange
 from uaclient import Log
 
 RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
@@ -18,12 +19,33 @@ RESP_COD = {100: 'SIP/2.0 100 Trying\r\n', 180: 'SIP/2.0 180 Ring\r\n',
                   'Digest nonce="{}"\r\n\r\n'),
             404: 'SIP/2.0 404 User Not Found\r\n\r\n',
             405: 'SIP/2.0 405 Method Not Allowed'}
+HEX = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd']
+HEX += ['e', 'f']
 
 
 def add_header(data):
     """Introduce cabecera proxy en los mensajes que se van a reenviar."""
     div = data.split("\r\n", 1)
     return "{}\r\n{}\r\n{}".format(div[0], PR_HEADER, div[1])
+
+
+def new_nonce():
+    """Crea un nuevo nonce con digitos hexadecimales pseudoaleatorios."""
+    return ''.join(choice(HEX) for i in range(randrange(0, 20)))
+
+def search_pass(name):
+    """Busca password del usuario pasado como parametro."""
+    with open(PASSWD_PATH) as f_pass:
+        try:
+            for line in f_pass:
+                if line.split(':')[0] == name:
+                    passwd = line.split(':')[1][0:-1]
+                    break
+                else:
+                    passwd = ""
+            return passwd
+        except FileNotFoundError:
+            sys.exit("Password file not found")
 
 
 class PRHandler(ContentHandler):
@@ -73,42 +95,30 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         with open(DBASE, 'w') as f_json:
             json.dump(self.user_data, f_json, sort_keys=True, indent=4)
 
-    def search_pass(self, name):
-        """Busca password del usuario pasado como parametro."""
-        with open(PASSWD_PATH) as f_pass:
-            try:
-                for line in f_pass:
-                    if line.split(':')[0] == name:
-                        passwd = line.split(':')[1][0:-1]
-                        break
-                    else:
-                        passwd = ""
-                return passwd
-            except FileNotFoundError:
-                sys.exit("Password file not found")
-
     def register(self, data):
         """Metodo REGISTER."""
         c_data = data.split()[1:]
         # Extracción de información del usuario
         u_name, u_port = c_data[0].split(':')[1:]
         u_ip, u_exp = self.client_address[0], c_data[3]
-        u_pass = self.search_pass(u_name)
+        u_pass = search_pass(u_name)
         # Controlando el tiempo
-        str_now = strftime('%Y-%m-%d %H:%M:%S', gmtime(int(time())))
         time_exp = int(u_exp) + int(time())
         str_exp = strftime('%Y-%m-%d %H:%M:%S', gmtime(time_exp))
-        nonce = "123456789"
+        nonce = new_nonce()
         if u_name not in self.user_data:
             self.user_data[u_name] = {'addr': u_ip, 'expires': str_exp,
-                                      'port': u_port, 'auth': False}
+                                      'port': u_port, 'auth': False,
+                                      'nonce': nonce}
+
             to_send = RESP_COD[401].format(nonce)
         elif not self.user_data[u_name]['auth']:
             try:
                 resp = data.split('"')[-2]
             except IndexError:
                 resp = ""
-            expect = HL.md5((nonce + u_pass).encode()).hexdigest()
+            u_nonce = self.user_data[u_name]['nonce']
+            expect = HL.md5((u_nonce + u_pass).encode()).hexdigest()
             if resp == expect:
                 self.user_data[u_name]['auth'] = True
                 self.user_data[u_name]['expires'] = str_exp
@@ -138,6 +148,7 @@ class SIPHandler(socketserver.DatagramRequestHandler):
         if recv.split('\r\n')[0:3] == [RESP_COD[100][0:-2],
                                        RESP_COD[180][0:-2], RESP_COD[200]]:
             text = add_header(recv)
+            print(text)
             self.socket.sendto(bytes(text, 'utf-8'), self.client_address)
         try:
             if recv.split()[1] and recv.split()[1] == "480":
