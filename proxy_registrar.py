@@ -33,6 +33,7 @@ def new_nonce():
     """Crea un nuevo nonce con digitos hexadecimales pseudoaleatorios."""
     return ''.join(choice(HEX) for i in range(randrange(0, 20)))
 
+
 def search_pass(name):
     """Busca password del usuario pasado como parametro."""
     with open(PASSWD_PATH) as f_pass:
